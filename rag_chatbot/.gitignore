@@ -1,0 +1,21 @@
+# Sensitive files
+.env
+
+# Testing and documents folders
+source4testing/
+documents/
+
+# Python-specific
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.ipynb_checkpoints/
+*.log
+
+# Other common exclusions
+.DS_Store
+*.bak
+*.swp
+*.tmp
