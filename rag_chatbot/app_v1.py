@@ -15,6 +15,7 @@ import nltk
 from nltk.tokenize import sent_tokenize
 from sklearn.cluster import KMeans
 import re
+import yaml  
 
 # Download NLTK data for sentence tokenization
 nltk.download('punkt', quiet=True)
@@ -401,6 +402,21 @@ def format_response(bot_message, passage_refs, merged_chunks):
     
     return ''.join(formatted_lines)
 
+
+# Load configuration
+try:
+    with open('prompt.yaml', 'r', encoding='utf-8') as config_file:
+        config = yaml.safe_load(config_file)
+    SYSTEM_PROMPT = config.get('system_prompt', '')
+    if not SYSTEM_PROMPT:
+        raise ValueError("System prompt not found in prompt.yaml")
+except FileNotFoundError:
+    logger.error("prompt.yaml not found")
+    raise
+except yaml.YAMLError:
+    logger.error("Invalid YAML in prompt.yaml")
+    raise
+
 @app.route('/')
 def home():
     # Reset conversation history when the user visits the home page
@@ -492,10 +508,10 @@ def chat():
     
     # Define the messages structure, including conversation history
     messages = [
-    {
-        "role": "system",
-        "content": "You are an assistant to the project manager, specializing in retrieving and analyzing information from internal project documents. Your role includes identifying risks (with severity: Critical/High/Medium/Low), flagging client clarification needs, extracting requirements and dependencies (including timelines), and detailing concrete quantitative data (e.g., numbers, volumes, sizes) in scope. When requested, provide estimations using document data first, supplemented by pre-trained knowledge if needed, and label assumptions clearly. Provide accurate answers based solely on documents unless estimations require otherwise, avoiding speculation. Structure responses with a brief summary followed by detailed analysis (e.g., Risks, Quantities, Dependencies, Clarifications, Estimations if requested). Cite Reference IDs ([RefX]) for document info; state if no documents are used. List references at the end (e.g., 'References: [Ref1]') and note 'Used pre-trained knowledge for estimation' if applicable."
-    }
+        {
+            "role": "system",
+            "content": SYSTEM_PROMPT
+        }
     ]
     # Add conversation history to messages
     messages.extend(conversation_history)
