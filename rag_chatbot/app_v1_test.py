@@ -98,36 +98,6 @@ def extract_text_from_pdf(file_path):
         logger.error(f"Error reading PDF {file_path}: {str(e)}")
         return []
 
-def extract_text_from_txt(file_path):
-    logger.info(f"Attempting to read TXT: {file_path}")
-    try:
-        with open(file_path, 'r', encoding='utf-8') as file:
-            content = file.read()
-            if content.strip():
-                chunks = chunk_text(content)
-                chunks_with_pages = [{'text': chunk, 'page': None} for chunk in chunks]
-                logger.info(f"Successfully read {len(chunks_with_pages)} chunks from {file_path}")
-                return chunks_with_pages
-        return []
-    except UnicodeDecodeError:
-        logger.warning(f"UTF-8 decoding failed for {file_path}, trying latin-1")
-        try:
-            with open(file_path, 'r', encoding='latin-1') as file:
-                content = file.read()
-                if content.strip():
-                    chunks = chunk_text(content)
-                    chunks_with_pages = [{'text': chunk, 'page': None} for chunk in chunks]
-                    logger.info(f"Successfully read {len(chunks_with_pages)} chunks from {file_path}")
-                    return chunks_with_pages
-            return []
-        except Exception as e:
-            logger.error(f"Error reading TXT {file_path}: {str(e)}")
-            return []
-    except Exception as e:
-        logger.error(f"Error reading TXT {file_path}: {str(e)}")
-        return []
-    
-
 def chunk_text(text, max_length=1000, min_length=300):
     """Split text into chunks with accurate length calculation and optimized merging.
     
@@ -193,47 +163,11 @@ def chunk_text(text, max_length=1000, min_length=300):
 
     # logger.info(f"Created {len(final_chunks)} chunks from {len(text)} characters")
     for idx, chunk in enumerate(final_chunks):
-        logger.info(f"Chunk {idx}: {len(chunk):4} chars | Start: {chunk[:50].strip()}")
+        logger.info(f"Chunk {idx}: {len(chunk):4} chars | Start: {chunk[:120].strip()}")
+        logger.info('--'*20)      
     
-    # logger.info('='*30)
     
     return final_chunks
-
-# # Improved document chunking function
-# def chunk_text(text, max_length=1000, min_length=300):
-#     if not text.strip():
-#         logger.warning("Empty text provided to chunk_text")
-#         return []
-    
-#     # Split text into sentences
-#     sentences = sent_tokenize(text)
-#     chunks = []
-#     current_chunk = []
-#     current_length = 0
-    
-#     for sentence in sentences:
-#         sentence_length = len(sentence) + 1
-#         if current_length + sentence_length > max_length and current_length >= min_length:
-#             chunks.append(" ".join(current_chunk))
-#             current_chunk = [sentence]
-#             current_length = sentence_length
-#         else:
-#             current_chunk.append(sentence)
-#             current_length += sentence_length
-    
-#     if current_chunk and current_length >= min_length:
-#         chunks.append(" ".join(current_chunk))
-#     elif current_chunk:
-#         if chunks:
-#             chunks[-1] = chunks[-1] + " " + " ".join(current_chunk)
-#         else:
-#             chunks.append(" ".join(current_chunk))
-    
-#     for i, chunk in enumerate(chunks):
-#         logger.debug(f"Chunk {i}: Length={len(chunk)}, Content={chunk[:100]}...")
-    
-#     logger.info(f"Created {len(chunks)} chunks from text of length {len(text)}")
-#     return chunks
 
 # Function to initialize the FAISS index
 def initialize_index():
@@ -253,7 +187,7 @@ def initialize_index():
     chunk_metadata = []
     
     file_extractors = {
-        '.txt': extract_text_from_txt,
+        # '.txt': extract_text_from_txt,
         '.pdf': extract_text_from_pdf,
         # '.pptx': extract_text_from_ppt,
         # '.docx': extract_text_from_docx
@@ -440,6 +374,74 @@ def format_response(bot_message, passage_refs, merged_chunks):
     
     return ''.join(formatted_lines)
 
+def prepare_passages(user_message):
+    query_embedding = embedder.encode([user_message], show_progress_bar=False)
+    query_embedding = np.array(query_embedding).astype('float32')
+    if len(query_embedding.shape) == 1:
+        query_embedding = query_embedding.reshape(1, -1)
+    logger.info(f"Query embedding generated - shape: {query_embedding.shape}, norm: {np.linalg.norm(query_embedding)}")
+    passages = []
+    passage_embeddings = []
+    merged_chunks = []
+    clusters = []
+    if faiss_index is not None and len(documents) > 0:
+        logger.info('='*10 + " Performing FAISS search" + "="*10)
+        distances, indices = faiss_index.search(query_embedding, k=num_retrieved_indices)
+        logger.info(f"FAISS search results:")
+        logger.info(f"- Retrieved indices: {indices[0].tolist()}")
+        logger.info(f"- Distances: {distances[0].tolist()}")
+        # logger.info(f"- Top match similarity: {1 - distances[0][0]}")
+        logger.info(distances[0])
+        logger.info('='*30)
+        valid_indices = [idx for idx in indices[0] if 0 <= idx < len(chunk_metadata)]
+        if not valid_indices:
+            logger.warning("No valid indices retrieved from FAISS search")
+            passages = []
+            passage_embeddings = []
+        else:
+            valid_indices.sort(key=lambda idx: (chunk_metadata[idx]['filepath'], chunk_metadata[idx]['chunk_index']))
+            
+            current_chunk = None
+            for idx in valid_indices:
+                chunk_info = chunk_metadata[idx]
+                if (current_chunk is None or
+                        current_chunk['filepath'] != chunk_info['filepath'] or
+                        current_chunk['chunk_index'] + 1 != chunk_info['chunk_index']):
+                    if current_chunk is not None:
+                        merged_chunks.append(current_chunk)
+                    current_chunk = {
+                        'filepath': chunk_info['filepath'],
+                        'chunk_index': chunk_info['chunk_index'],
+                        'text': chunk_info['original_text'],
+                        'pages': [chunk_info['page']] if chunk_info['page'] is not None else []
+                    }
+                else:
+                    current_chunk['text'] += " " + chunk_info['original_text']
+                    current_chunk['chunk_index'] = chunk_info['chunk_index']
+                    if chunk_info['page'] is not None:
+                        current_chunk['pages'].append(chunk_info['page'])
+            if current_chunk is not None:
+                merged_chunks.append(current_chunk)
+            
+            # Create passages and embeddings for clustering
+            for chunk in merged_chunks:
+                passage = f"Document: {chunk['filepath']}\nContent: {chunk['text']}"
+                passages.append(passage)
+                passage_embeddings.append(embedder.encode([passage], show_progress_bar=False)[0])
+            
+            # Cluster passages based on semantic similarity
+            passage_embeddings = np.array(passage_embeddings).astype('float32')
+            clusters = cluster_passages(passages, passage_embeddings)
+            
+            # Rebuild passages based on clusters
+            passages = []
+            for clustered_passages, _ in clusters:
+                cluster_text = "\n\n".join(clustered_passages)
+                passages.append(cluster_text)
+            
+            logger.info(f"Clustered passages: {passages}")
+            return passages, merged_chunks
+
 
 
 
@@ -470,71 +472,8 @@ def chat():
         if len(query_embedding.shape) == 1:
             query_embedding = query_embedding.reshape(1, -1)
         logger.info(f"Query embedding generated - shape: {query_embedding.shape}, norm: {np.linalg.norm(query_embedding)}")
-        
-        passages = []
-        passage_embeddings = []
-        merged_chunks = []
-        clusters = []
-        if faiss_index is not None and len(documents) > 0:
-            logger.info('='*10 + " Performing FAISS search" + "="*10)
-            distances, indices = faiss_index.search(query_embedding, k=num_retrieved_indices)
-            logger.info(f"FAISS search results:")
-            logger.info(f"- Retrieved indices: {indices[0].tolist()}")
-            logger.info(f"- Distances: {distances[0].tolist()}")
-            logger.info(f"- Top match similarity: {1 - distances[0][0]}")
-            logger.info('='*30)
-            valid_indices = [idx for idx in indices[0] if 0 <= idx < len(chunk_metadata)]
-            if not valid_indices:
-                logger.warning("No valid indices retrieved from FAISS search")
-                passages = []
-                passage_embeddings = []
-            else:
-                valid_indices.sort(key=lambda idx: (chunk_metadata[idx]['filepath'], chunk_metadata[idx]['chunk_index']))
-                
-                current_chunk = None
-                for idx in valid_indices:
-                    chunk_info = chunk_metadata[idx]
-                    if (current_chunk is None or
-                            current_chunk['filepath'] != chunk_info['filepath'] or
-                            current_chunk['chunk_index'] + 1 != chunk_info['chunk_index']):
-                        if current_chunk is not None:
-                            merged_chunks.append(current_chunk)
-                        current_chunk = {
-                            'filepath': chunk_info['filepath'],
-                            'chunk_index': chunk_info['chunk_index'],
-                            'text': chunk_info['original_text'],
-                            'pages': [chunk_info['page']] if chunk_info['page'] is not None else []
-                        }
-                    else:
-                        current_chunk['text'] += " " + chunk_info['original_text']
-                        current_chunk['chunk_index'] = chunk_info['chunk_index']
-                        if chunk_info['page'] is not None:
-                            current_chunk['pages'].append(chunk_info['page'])
-                if current_chunk is not None:
-                    merged_chunks.append(current_chunk)
-                
-                # Create passages and embeddings for clustering
-                for chunk in merged_chunks:
-                    passage = f"Document: {chunk['filepath']}\nContent: {chunk['text']}"
-                    passages.append(passage)
-                    passage_embeddings.append(embedder.encode([passage], show_progress_bar=False)[0])
-                
-                # Cluster passages based on semantic similarity
-                passage_embeddings = np.array(passage_embeddings).astype('float32')
-                clusters = cluster_passages(passages, passage_embeddings)
-                
-                # Rebuild passages based on clusters
-                passages = []
-                for clustered_passages, _ in clusters:
-                    cluster_text = "\n\n".join(clustered_passages)
-                    passages.append(cluster_text)
-                
-                logger.info(f"Clustered passages: {passages}")
-        else:
-            passages = []
-            passage_embeddings = []
-            logger.warning("No documents indexed, proceeding without context")
-    
+        passages, merged_chunks = prepare_passages(user_message)
+
     except Exception as e:
         logger.error(f"Embedding/search error: {str(e)}")
         passages = []
@@ -556,7 +495,7 @@ def chat():
     messages.extend(conversation_history)
     # Add the current prompt as the latest user message
     messages.append({"role": "user", "content": prompt})
-    
+
     # API call and response handling
     try:
         if API_TYPE == "deepseek":
@@ -596,7 +535,7 @@ def chat():
                 model=AZURE_OPENAI_DEPLOYMENT,
                 messages=messages,
                 max_tokens=1500,
-                temperature=0.4
+                temperature=0.2,
             )
             bot_message = response.choices[0].message.content.strip()
             logger.info("Received LLM response")
