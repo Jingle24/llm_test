@@ -97,6 +97,35 @@ def extract_text_from_pdf(file_path):
     except Exception as e:
         logger.error(f"Error reading PDF {file_path}: {str(e)}")
         return []
+    
+def extract_text_from_txt(file_path):
+    logger.info(f"Attempting to read TXT: {file_path}")
+    try:
+        with open(file_path, 'r', encoding='utf-8') as file:
+            content = file.read()
+            if content.strip():
+                chunks = chunk_text(content)
+                chunks_with_pages = [{'text': chunk, 'page': None} for chunk in chunks]
+                logger.info(f"Successfully read {len(chunks_with_pages)} chunks from {file_path}")
+                return chunks_with_pages
+        return []
+    except UnicodeDecodeError:
+        logger.warning(f"UTF-8 decoding failed for {file_path}, trying latin-1")
+        try:
+            with open(file_path, 'r', encoding='latin-1') as file:
+                content = file.read()
+                if content.strip():
+                    chunks = chunk_text(content)
+                    chunks_with_pages = [{'text': chunk, 'page': None} for chunk in chunks]
+                    logger.info(f"Successfully read {len(chunks_with_pages)} chunks from {file_path}")
+                    return chunks_with_pages
+            return []
+        except Exception as e:
+            logger.error(f"Error reading TXT {file_path}: {str(e)}")
+            return []
+    except Exception as e:
+        logger.error(f"Error reading TXT {file_path}: {str(e)}")
+        return []    
 
 def chunk_text(text, max_length=1000, min_length=300):
     """Split text into chunks with accurate length calculation and optimized merging.
@@ -187,7 +216,7 @@ def initialize_index():
     chunk_metadata = []
     
     file_extractors = {
-        # '.txt': extract_text_from_txt,
+        '.txt': extract_text_from_txt,
         '.pdf': extract_text_from_pdf,
         # '.pptx': extract_text_from_ppt,
         # '.docx': extract_text_from_docx
